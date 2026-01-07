@@ -1,18 +1,72 @@
 import AppKit
 import PDFKit
 
-// MARK: - Bookmarks (Vim-style)
-
-private var bookmarks: [Character: BookmarkState] = [:]
-
-private enum PendingCommand {
-    case setMark
-    case jumpMark
-}
-
-private var pendingCommand: PendingCommand?
-
 final class UpdraftPDFView: PDFView {
+
+    // MARK: - Bookmarks (Vim-style)
+    private enum PendingCommand {
+        case setMark
+        case jumpMark
+    }
+
+    private var pendingCommand: PendingCommand?
+
+    private var bookmarks: [Character: BookmarkState] = [:]
+    // MARK: - Link navigation history (Vim-like jump list)
+
+    private var backStack: [BookmarkState] = []
+    private var forwardStack: [BookmarkState] = []
+
+    
+    private func captureCurrentLocation() -> BookmarkState? {
+        guard let doc = document else { return nil }
+
+        // Choose a point near the top-left of what’s visible.
+        // Small inset keeps us inside page content.
+        let inset: CGFloat = 12.0
+        let viewPoint = CGPoint(x: bounds.minX + inset, y: bounds.maxY - inset)
+
+        guard let page = page(for: viewPoint, nearest: true) else { return nil }
+        let pageIndex = doc.index(for: page)
+        let pagePoint = convert(viewPoint, to: page)
+
+        return BookmarkState(pageIndex: pageIndex, pointInPage: pagePoint)
+    }
+
+    private func jump(to state: BookmarkState) {
+        guard let doc = document else { NSSound.beep(); return }
+        guard state.pageIndex >= 0, state.pageIndex < doc.pageCount,
+              let page = doc.page(at: state.pageIndex)
+        else { NSSound.beep(); return }
+
+        let point: CGPoint
+        if let p = state.pointInPage {
+            point = p
+        } else {
+            let bounds = page.bounds(for: .cropBox)
+            point = CGPoint(x: 0, y: bounds.height)
+        }
+
+        super.go(to: PDFDestination(page: page, at: point))
+    }
+
+    private func goBack() {
+        guard let cur = captureCurrentLocation(), let prev = backStack.popLast() else {
+            NSSound.beep()
+            return
+        }
+        forwardStack.append(cur)
+        jump(to: prev)
+    }
+
+    private func goForward() {
+        guard let cur = captureCurrentLocation(), let next = forwardStack.popLast() else {
+            NSSound.beep()
+            return
+        }
+        backStack.append(cur)
+        jump(to: next)
+    }
 
     weak var updraftDelegate: AppDelegate?
 
@@ -97,6 +151,19 @@ final class UpdraftPDFView: PDFView {
             return
         }
 
+        // Vim-like navigation: Ctrl-O back, Ctrl-I forward.
+        // Ctrl-I is frequently delivered as TAB ("\t"), so handle both.
+        if event.modifierFlags.contains(.control) {
+            if chars == "o" {
+                goBack()
+                return
+            }
+            if chars == "i" || chars == "\t" {
+                goForward()
+                return
+            }
+        }
+
         // If we are waiting for a bookmark letter
         if let pending = pendingCommand {
             pendingCommand = nil
@@ -128,23 +195,13 @@ final class UpdraftPDFView: PDFView {
         }
     }
 
-        private func setBookmark(_ mark: Character) {
-        guard
-            let doc = document,
-            let page = currentPage
-        else {
+    private func setBookmark(_ mark: Character) {
+        guard let loc = captureCurrentLocation() else {
             NSSound.beep()
             return
         }
 
-        let pageIndex = doc.index(for: page)
-
-        // Same policy as StateStore.captureViewState: center-of-view -> page coords
-        let viewCenter = CGPoint(x: bounds.midX, y: bounds.midY)
-        let pagePoint = convert(viewCenter, to: page)
-
-        bookmarks[mark] = BookmarkState(pageIndex: pageIndex, pointInPage: pagePoint)
-
+        bookmarks[mark] = loc
         updraftDelegate?.noteViewStateChanged()
     }
 
@@ -172,7 +229,7 @@ final class UpdraftPDFView: PDFView {
             point = CGPoint(x: 0, y: bounds.height)
         }
 
-        go(to: PDFDestination(page: page, at: point))
+        super.go(to: PDFDestination(page: page, at: point))
     }
 }
 
@@ -199,5 +256,20 @@ extension UpdraftPDFView {
             }
         }
         bookmarks = rebuilt
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Only treat plain left-click on *internal* PDF links as a jump.
+        // Right-click is handled by the context menu; we don't want to push history then.
+        if event.type == .leftMouseDown {
+            if case .destination = linkTarget(at: event) {
+                if let cur = captureCurrentLocation() {
+                    backStack.append(cur)
+                    forwardStack.removeAll()
+                }
+            }
+        }
+
+        super.mouseDown(with: event)
     }
 }
