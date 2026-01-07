@@ -143,6 +143,12 @@ final class UpdraftPDFView: PDFView {
     }
 
     override func keyDown(with event: NSEvent) {
+  
+        if event.modifierFlags.contains(.command) {
+            super.keyDown(with: event)
+            return
+        }
+
         guard
             let chars = event.charactersIgnoringModifiers,
             let c = chars.first
@@ -235,6 +241,8 @@ final class UpdraftPDFView: PDFView {
 
 extension UpdraftPDFView {
 
+    override var acceptsFirstResponder: Bool { true }
+
     func exportBookmarks() -> [String: BookmarkState] {
         var out: [String: BookmarkState] = [:]
         for (ch, bm) in bookmarks {
@@ -259,6 +267,8 @@ extension UpdraftPDFView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+
         // Only treat plain left-click on *internal* PDF links as a jump.
         // Right-click is handled by the context menu; we don't want to push history then.
         if event.type == .leftMouseDown {
@@ -271,5 +281,11 @@ extension UpdraftPDFView {
         }
 
         super.mouseDown(with: event)
+    }
+
+    override func copy(_ sender: Any?) {
+        // PDFView already knows how to copy its current selection.
+        // Calling super is typically sufficient.
+        super.copy(sender)
     }
 }
