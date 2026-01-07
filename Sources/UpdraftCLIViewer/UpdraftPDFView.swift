@@ -37,7 +37,8 @@ final class UpdraftPDFView: PDFView {
             updraftDelegate?.openViewerWindow(
                 document: doc,
                 destination: dest,
-                title: (NSApp.keyWindow?.title ?? "Updraft") + " (Link)"
+                title: (NSApp.keyWindow?.title ?? "Updraft") + " (Link)",
+                initialScaleFactor: self.scaleFactor
             )
             NSApp.activate(ignoringOtherApps: true)
 
