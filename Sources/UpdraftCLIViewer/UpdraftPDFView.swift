@@ -1,6 +1,17 @@
 import AppKit
 import PDFKit
 
+// MARK: - Bookmarks (Vim-style)
+
+private var bookmarks: [Character: PDFDestination] = [:]
+
+private enum PendingCommand {
+    case setMark
+    case jumpMark
+}
+
+private var pendingCommand: PendingCommand?
+
 final class UpdraftPDFView: PDFView {
 
     weak var updraftDelegate: AppDelegate?
@@ -75,5 +86,118 @@ final class UpdraftPDFView: PDFView {
         }
 
         return nil
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard
+            let chars = event.charactersIgnoringModifiers,
+            let c = chars.first
+        else {
+            super.keyDown(with: event)
+            return
+        }
+
+        // If we are waiting for a bookmark letter
+        if let pending = pendingCommand {
+            pendingCommand = nil
+            handleBookmarkKey(c, mode: pending)
+            return
+        }
+
+        switch c {
+        case "m":
+            pendingCommand = .setMark
+        case "'":
+            pendingCommand = .jumpMark
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    private func handleBookmarkKey(_ c: Character, mode: PendingCommand) {
+        guard c.isLetter else {
+            NSSound.beep()
+            return
+        }
+
+        switch mode {
+        case .setMark:
+            setBookmark(c)
+        case .jumpMark:
+            jumpToBookmark(c)
+        }
+    }
+
+    private func setBookmark(_ mark: Character) {
+        guard let page = currentPage else {
+            NSSound.beep()
+            return
+        }
+
+        let point: CGPoint
+        if let dest = currentDestination {
+            point = dest.point
+        } else {
+            // Fallback: top-left of page
+            let bounds = page.bounds(for: .cropBox)
+            point = CGPoint(x: 0, y: bounds.height)
+        }
+
+        let destination = PDFDestination(page: page, at: point)
+        bookmarks[mark] = destination
+        updraftDelegate?.noteViewStateChanged()
+
+        Swift.print("Updraft: set bookmark '\(mark)'")
+    }
+
+    private func jumpToBookmark(_ mark: Character) {
+        Swift.print("Updraft: attempt to go to '\(mark)'")
+        guard let dest = bookmarks[mark] else {
+            NSSound.beep()
+            return
+        }
+
+        Swift.print("Updraft: go to '\(mark)'")
+        go(to: dest)
+    }
+}
+
+extension UpdraftPDFView {
+
+    func exportBookmarks() -> [String: BookmarkState] {
+        guard let doc = document else { return [:] }
+
+        var out: [String: BookmarkState] = [:]
+        for (ch, dest) in bookmarks {
+            guard let page = dest.page else { continue; }
+            let idx = doc.index(for: page)
+            out[String(ch)] = BookmarkState(pageIndex: idx, pointInPage: dest.point)
+        }
+        return out
+    }
+
+    func importBookmarks(_ state: [String: BookmarkState], fingerprintOK: Bool) {
+        guard let doc = document else { return }
+
+        var rebuilt: [Character: PDFDestination] = [:]
+
+        for (k, s) in state {
+            guard let ch = k.first, ch.isLetter else { continue }
+            let idx = max(0, min(s.pageIndex, doc.pageCount - 1))
+            guard let page = doc.page(at: idx) else { continue }
+
+            // Apply your existing policy: if fingerprint mismatch, ignore pointInPage
+            let point: CGPoint
+            if fingerprintOK, let p = s.pointInPage {
+                point = p
+            } else {
+                let bounds = page.bounds(for: .cropBox)
+                point = CGPoint(x: 0, y: bounds.height)
+            }
+
+            rebuilt[ch] = PDFDestination(page: page, at: point)
+        }
+
+        bookmarks = rebuilt
     }
 }

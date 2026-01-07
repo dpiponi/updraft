@@ -101,11 +101,20 @@ final class StateStore {
         let viewCenter = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY)
         let pagePoint = pdfView.convert(viewCenter, to: page)
 
+        let bookmarks: [String: BookmarkState]?
+        if let up = pdfView as? UpdraftPDFView {
+            let exported = up.exportBookmarks()
+            bookmarks = exported.isEmpty ? nil : exported
+        } else {
+            bookmarks = nil
+        }
+
         return DocumentViewState(
             pageIndex: pageIndex,
             pointInPage: pagePoint,
             scaleFactor: pdfView.autoScales ? nil : pdfView.scaleFactor,
-            usesAutoScale: pdfView.autoScales
+            usesAutoScale: pdfView.autoScales,
+            bookmarks: bookmarks
         )
     }
 }

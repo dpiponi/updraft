@@ -233,6 +233,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
 
+        if let restoredState, let bm = restoredState.view.bookmarks {
+            let fingerprintOK = StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
+            pdfView.importBookmarks(bm, fingerprintOK: fingerprintOK)
+        }
+
         // Navigate to restored position
         if let vs = viewState {
             let idx = clamp(vs.pageIndex, 0, max(0, doc.pageCount - 1))
@@ -253,6 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         windows.append(window)
         attachObservers(pdfView: pdfView, window: window)
+        scheduleSave()
+    }
+
+    func noteViewStateChanged() {
         scheduleSave()
     }
 

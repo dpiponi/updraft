@@ -1,6 +1,11 @@
 import Foundation
 import CoreGraphics
 
+struct BookmarkState: Codable {
+    let pageIndex: Int
+    let pointInPage: CGPoint?
+}
+
 struct FileFingerprint: Codable, Hashable {
     let fileSize: Int64
     let modTime: TimeInterval
@@ -28,6 +33,7 @@ struct DocumentViewState: Codable {
     let pointInPage: CGPoint?
     let scaleFactor: CGFloat?
     let usesAutoScale: Bool
+    let bookmarks: [String: BookmarkState]?
 }
 
 struct WindowState: Codable {
