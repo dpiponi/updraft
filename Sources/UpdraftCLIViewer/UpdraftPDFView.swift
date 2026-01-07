@@ -3,7 +3,7 @@ import PDFKit
 
 // MARK: - Bookmarks (Vim-style)
 
-private var bookmarks: [Character: PDFDestination] = [:]
+private var bookmarks: [Character: BookmarkState] = [:]
 
 private enum PendingCommand {
     case setMark
@@ -128,76 +128,76 @@ final class UpdraftPDFView: PDFView {
         }
     }
 
-    private func setBookmark(_ mark: Character) {
-        guard let page = currentPage else {
+        private func setBookmark(_ mark: Character) {
+        guard
+            let doc = document,
+            let page = currentPage
+        else {
+            NSSound.beep()
+            return
+        }
+
+        let pageIndex = doc.index(for: page)
+
+        // Same policy as StateStore.captureViewState: center-of-view -> page coords
+        let viewCenter = CGPoint(x: bounds.midX, y: bounds.midY)
+        let pagePoint = convert(viewCenter, to: page)
+
+        bookmarks[mark] = BookmarkState(pageIndex: pageIndex, pointInPage: pagePoint)
+
+        updraftDelegate?.noteViewStateChanged()
+    }
+
+    private func jumpToBookmark(_ mark: Character) {
+        guard
+            let doc = document,
+            let bm = bookmarks[mark]
+        else {
+            NSSound.beep()
+            return
+        }
+
+        guard bm.pageIndex >= 0, bm.pageIndex < doc.pageCount,
+              let page = doc.page(at: bm.pageIndex)
+        else {
             NSSound.beep()
             return
         }
 
         let point: CGPoint
-        if let dest = currentDestination {
-            point = dest.point
+        if let p = bm.pointInPage {
+            point = p
         } else {
-            // Fallback: top-left of page
             let bounds = page.bounds(for: .cropBox)
             point = CGPoint(x: 0, y: bounds.height)
         }
 
-        let destination = PDFDestination(page: page, at: point)
-        bookmarks[mark] = destination
-        updraftDelegate?.noteViewStateChanged()
-
-        Swift.print("Updraft: set bookmark '\(mark)'")
-    }
-
-    private func jumpToBookmark(_ mark: Character) {
-        Swift.print("Updraft: attempt to go to '\(mark)'")
-        guard let dest = bookmarks[mark] else {
-            NSSound.beep()
-            return
-        }
-
-        Swift.print("Updraft: go to '\(mark)'")
-        go(to: dest)
+        go(to: PDFDestination(page: page, at: point))
     }
 }
 
 extension UpdraftPDFView {
 
     func exportBookmarks() -> [String: BookmarkState] {
-        guard let doc = document else { return [:] }
-
         var out: [String: BookmarkState] = [:]
-        for (ch, dest) in bookmarks {
-            guard let page = dest.page else { continue; }
-            let idx = doc.index(for: page)
-            out[String(ch)] = BookmarkState(pageIndex: idx, pointInPage: dest.point)
+        for (ch, bm) in bookmarks {
+            out[String(ch)] = bm
         }
         return out
     }
 
     func importBookmarks(_ state: [String: BookmarkState], fingerprintOK: Bool) {
-        guard let doc = document else { return }
-
-        var rebuilt: [Character: PDFDestination] = [:]
-
-        for (k, s) in state {
+        var rebuilt: [Character: BookmarkState] = [:]
+        for (k, bm) in state {
             guard let ch = k.first, ch.isLetter else { continue }
-            let idx = max(0, min(s.pageIndex, doc.pageCount - 1))
-            guard let page = doc.page(at: idx) else { continue }
 
-            // Apply your existing policy: if fingerprint mismatch, ignore pointInPage
-            let point: CGPoint
-            if fingerprintOK, let p = s.pointInPage {
-                point = p
+            if fingerprintOK {
+                rebuilt[ch] = bm
             } else {
-                let bounds = page.bounds(for: .cropBox)
-                point = CGPoint(x: 0, y: bounds.height)
+                // If fingerprint mismatch, keep page only (drop point)
+                rebuilt[ch] = BookmarkState(pageIndex: bm.pageIndex, pointInPage: nil)
             }
-
-            rebuilt[ch] = PDFDestination(page: page, at: point)
         }
-
         bookmarks = rebuilt
     }
 }
