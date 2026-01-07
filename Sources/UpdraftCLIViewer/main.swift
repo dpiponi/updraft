@@ -4,124 +4,73 @@ import PDFKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var windows: [NSWindow] = []
-    private var document: PDFDocument?
+    private let saveDebouncer = Debouncer(delay: 0.5)
+    private var isTerminating = false
 
+    // MARK: - App lifecycle
+
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
 
         let args = CommandLine.arguments.dropFirst()
+        let session = StateStore.shared.loadSession()
 
-        guard let path = args.first else {
-            fputs("Usage: updraft /path/to/file.pdf\n", stderr)
-            NSApp.terminate(nil)
+        if let path = args.first {
+            // CLI launch: open ONLY this file, but restore ALL saved windows for it.
+            let cliURL = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+
+            var matches: [WindowState] = []
+
+            if let session {
+                for ws in session.windows {
+                    guard let restoredURL = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
+                    let r = restoredURL.resolvingSymlinksInPath().standardizedFileURL
+                    if r == cliURL {
+                        matches.append(ws)
+                    }
+                }
+            }
+
+            if matches.isEmpty {
+                // No saved state for this doc: open it "fresh"
+                openViewerWindow(url: cliURL, restoredState: nil)
+            } else {
+                // Restore every saved window for this doc
+                for ws in matches {
+                    openViewerWindow(url: cliURL, restoredState: ws)
+                }
+            }
+
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let url = URL(fileURLWithPath: path)
-
-        guard let doc = PDFDocument(url: url) else {
-            fputs("Failed to open PDF: \(url.path)\n", stderr)
-            NSApp.terminate(nil)
-            return
+        // No CLI file: restore the full previous session (all windows)
+        if let session {
+            for ws in session.windows {
+                guard let url = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
+                openViewerWindow(url: url, restoredState: ws)
+            }
         }
 
-        self.document = doc
-        openViewerWindow(
-            document: doc,
-            destination: nil,
-            title: url.lastPathComponent,
-            initialScaleFactor: nil
-        )
-
-        // Bring app to foreground after window exists
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+
+        // Save session while windows are still present
+        saveNow()
+
+        return .terminateNow
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
 
-    // MARK: - Window creation
-    
-    
-    
-    func openViewerWindow(
-        document: PDFDocument,
-        destination: PDFDestination?,
-        title: String,
-        initialScaleFactor: CGFloat?
-    ) {
-        let pdfView = UpdraftPDFView(frame: .zero)
-        pdfView.document = document
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.displayDirection = .vertical
-        pdfView.updraftDelegate = self
-
-        let scaleToUse: CGFloat
-        if let s = initialScaleFactor {
-            pdfView.autoScales = false
-            pdfView.scaleFactor = s
-            scaleToUse = s
-        } else {
-            // Keep your prior behavior: window matches the page size in PDF points,
-            // and PDFKit fits content via autoScales.
-            pdfView.autoScales = true
-            scaleToUse = 1.0
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = title
-        window.contentView = pdfView
-
-        // Size window content to the (target) page size, scaled by zoom if provided.
-        let pageToMeasure: PDFPage? = destination?.page ?? document.page(at: 0)
-        if let page = pageToMeasure {
-            let pageBounds = page.bounds(for: .cropBox)
-            let padding: CGFloat = 24.0
-
-            var desired = NSSize(
-                width: pageBounds.width * scaleToUse + padding,
-                height: pageBounds.height * scaleToUse + padding
-            )
-
-            if let screen = NSScreen.main {
-                let vf = screen.visibleFrame
-                let maxW = max(400.0, vf.width - 40.0)
-                let maxH = max(300.0, vf.height - 40.0)
-                desired.width = min(desired.width, maxW)
-                desired.height = min(desired.height, maxH)
-            }
-
-            window.setContentSize(desired)
-        }
-
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-
-        if let destination {
-            pdfView.go(to: destination)
-        }
-
-        windows.append(window)
-    }
-
-    @objc private func bringAllWindowsToFront(_ sender: Any?) {
-        // Make Updraft the active (frontmost) app.
-        NSApp.activate(ignoringOtherApps: true)
-
-        // Bring every Updraft window to the front.
-        for w in windows where w.isVisible {
-            w.makeKeyAndOrderFront(nil)
-        }
-
-        // Optional: ask AppKit to arrange them in front (helps if some are behind others).
-        NSApp.arrangeInFront(nil)
-    }
+    // MARK: - Menu
 
     private func buildMainMenu() {
         let mainMenu = NSMenu()
@@ -133,7 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenuItem.submenu = appMenu
         appMenu.addItem(withTitle: "Quit Updraft", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
-        // File menu (optional but conventional)
+        // File menu
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
@@ -160,16 +109,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bringAllItem = NSMenuItem(
             title: "Bring All to Front",
             action: #selector(bringAllWindowsToFront(_:)),
-            keyEquivalent: "`"    // pick a shortcut you like
+            keyEquivalent: "`"
         )
         bringAllItem.keyEquivalentModifierMask = [.command, .shift]
         bringAllItem.target = self
         windowMenu.addItem(bringAllItem)
 
-        // Keep the standard item too, if you want it:
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
 
         NSApp.mainMenu = mainMenu
+    }
+
+    // MARK: - Actions
+
+    @objc private func bringAllWindowsToFront(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
+        for w in windows where w.isVisible {
+            w.makeKeyAndOrderFront(nil)
+        }
+        NSApp.arrangeInFront(nil)
     }
 
     @objc private func goToPage(_ sender: Any?) {
@@ -195,8 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
 
         let field = NSTextField(string: "\(currentIndex + 1)")
-        field.alignment = .left
-        field.frame = NSRect(x: 0, y: 0, width: 200, height: 24)
+        field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
         alert.accessoryView = field
 
         let response = alert.runModal()
@@ -208,13 +165,224 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let targetIndex = n - 1
-        guard let page = doc.page(at: targetIndex) else { return }
+        guard let page = doc.page(at: n - 1) else { return }
         pdfView.go(to: page)
+    }
+
+    // MARK: - Window creation (URL-based, used for open/restore)
+
+    func openViewerWindow(url: URL, restoredState: WindowState?) {
+        // Security-scoped best-effort
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+
+        guard let doc = PDFDocument(url: url) else { return }
+
+        let pdfView = UpdraftPDFView(frame: .zero)
+        pdfView.document = doc
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.updraftDelegate = self
+
+        // Apply zoom/state
+        let viewState = restoredState?.view
+        if let viewState {
+            if viewState.usesAutoScale {
+                pdfView.autoScales = true
+            } else if let s = viewState.scaleFactor {
+                pdfView.autoScales = false
+                pdfView.scaleFactor = s
+            } else {
+                pdfView.autoScales = true
+            }
+        } else {
+            pdfView.autoScales = true
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = url.lastPathComponent
+        window.contentView = pdfView
+
+        if let savedFrame = restoredState?.frame {
+            // savedFrame is a WINDOW frame (screen coords), not a content rect.
+            window.setFrame(savedFrame, display: false)
+        } else {
+            // No saved frame: size to page and center (your prior behavior)
+            let pageToMeasure: PDFPage? = {
+                if let vs = viewState, let page = doc.page(at: clamp(vs.pageIndex, 0, doc.pageCount - 1)) {
+                    return page
+                }
+                return doc.page(at: 0)
+            }()
+
+            let scaleForSizing: CGFloat = {
+                if let vs = viewState, !vs.usesAutoScale, let s = vs.scaleFactor { return s }
+                return 1.0
+            }()
+
+            if let pageToMeasure {
+                sizeWindowToPage(window: window, page: pageToMeasure, scale: scaleForSizing)
+            }
+            window.center()
+        }
+
+        window.makeKeyAndOrderFront(nil)
+
+        // Navigate to restored position
+        if let vs = viewState {
+            let idx = clamp(vs.pageIndex, 0, max(0, doc.pageCount - 1))
+            if let page = doc.page(at: idx) {
+                // If fingerprint changed, ignore pointInPage (best-effort policy)
+                let fingerprintOK: Bool = {
+                    guard let restoredState else { return true }
+                    return StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
+                }()
+
+                if fingerprintOK, let p = vs.pointInPage {
+                    pdfView.go(to: PDFDestination(page: page, at: p))
+                } else {
+                    pdfView.go(to: page)
+                }
+            }
+        }
+
+        windows.append(window)
+        attachObservers(pdfView: pdfView, window: window)
+        scheduleSave()
+    }
+
+    // MARK: - Window creation (existing document, used for "open link in new window")
+
+    func openViewerWindowFromExistingDocument(
+        document: PDFDocument,
+        destination: PDFDestination?,
+        title: String,
+        initialScaleFactor: CGFloat?
+    ) {
+        let pdfView = UpdraftPDFView(frame: .zero)
+        pdfView.document = document
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.updraftDelegate = self
+
+        let scaleForSizing: CGFloat
+        if let s = initialScaleFactor {
+            pdfView.autoScales = false
+            pdfView.scaleFactor = s
+            scaleForSizing = s
+        } else {
+            pdfView.autoScales = true
+            scaleForSizing = 1.0
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.contentView = pdfView
+
+        // Size to the target page at the same zoom
+        if let page = destination?.page ?? document.page(at: 0) {
+            sizeWindowToPage(window: window, page: page, scale: scaleForSizing)
+        }
+
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+
+        if let destination {
+            pdfView.go(to: destination)
+        }
+
+        windows.append(window)
+        attachObservers(pdfView: pdfView, window: window)
+        scheduleSave()
+    }
+
+    // MARK: - Observers / Saving
+
+    private func attachObservers(pdfView: PDFView, window: NSWindow) {
+        NotificationCenter.default.addObserver(
+            forName: .PDFViewPageChanged,
+            object: pdfView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleSave()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .PDFViewScaleChanged,
+            object: pdfView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleSave()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.windows.removeAll { $0 === window }
+
+            // If the app is quitting, don't overwrite the session as windows drain to zero.
+            if !self.isTerminating {
+                self.saveNow()
+            }
+        }
+    }
+
+    private func scheduleSave() {
+        saveDebouncer.schedule { [weak self] in
+            self?.saveNow()
+        }
+    }
+
+    private func saveNow() {
+        StateStore.shared.saveSession(windows: windows)
+        print("Updraft: saved session with \(windows.count) window(s)")
+    }
+
+    // MARK: - Window sizing to page
+
+    private func sizeWindowToPage(window: NSWindow, page: PDFPage, scale: CGFloat) {
+        let bounds = page.bounds(for: .cropBox)
+        let padding: CGFloat = 24.0
+
+        var desired = NSSize(
+            width: bounds.width * scale + padding,
+            height: bounds.height * scale + padding
+        )
+
+        if let screen = NSScreen.main {
+            let vf = screen.visibleFrame
+            let maxW = max(400.0, vf.width - 40.0)
+            let maxH = max(300.0, vf.height - 40.0)
+            desired.width = min(desired.width, maxW)
+            desired.height = min(desired.height, maxH)
+        }
+
+        window.setContentSize(desired)
     }
 }
 
-// MARK: - App bootstrap
+// MARK: - Helpers
+
+private func clamp(_ x: Int, _ lo: Int, _ hi: Int) -> Int {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+// MARK: - App bootstrap (must be top-level in main.swift)
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

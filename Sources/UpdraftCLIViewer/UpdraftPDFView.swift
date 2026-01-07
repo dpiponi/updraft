@@ -27,14 +27,12 @@ final class UpdraftPDFView: PDFView {
     }
 
     @objc private func openLinkInNewWindow(_ sender: NSMenuItem) {
-        guard
-            let doc = self.document,
-            let target = sender.representedObject as? LinkTarget
-        else { return }
+        guard let doc = self.document else { return }
+        guard let target = sender.representedObject as? LinkTarget else { return }
 
         switch target {
         case .destination(let dest):
-            updraftDelegate?.openViewerWindow(
+            updraftDelegate?.openViewerWindowFromExistingDocument(
                 document: doc,
                 destination: dest,
                 title: (NSApp.keyWindow?.title ?? "Updraft") + " (Link)",
@@ -63,20 +61,15 @@ final class UpdraftPDFView: PDFView {
 
         guard let annotation = page.annotation(at: pagePoint) else { return nil }
 
-        // Direct destination
         if let dest = annotation.destination {
             return .destination(dest)
         }
 
-        // Action-based links
         if let action = annotation.action {
-
             if let goTo = action as? PDFActionGoTo {
-                return .destination(goTo.destination)
+                return .destination(goTo.destination) // non-optional on your SDK
             }
-
-            if let urlAction = action as? PDFActionURL,
-               let url = urlAction.url {
+            if let urlAction = action as? PDFActionURL, let url = urlAction.url {
                 return .url(url)
             }
         }
