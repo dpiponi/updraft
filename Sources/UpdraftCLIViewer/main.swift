@@ -169,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.accessoryView = field
         field.selectText(nil)
 
+        alert.window.animationBehavior = .none
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
@@ -227,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
         alert.accessoryView = field
 
+        alert.window.animationBehavior = .none
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
