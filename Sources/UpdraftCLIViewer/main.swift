@@ -1,11 +1,28 @@
 import AppKit
 import PDFKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class ReturnOnlySearchField: NSSearchField {
+    override func keyDown(with event: NSEvent) {
+        // Only trigger the action on Return/Enter.
+        if event.keyCode == 36 || event.keyCode == 76 { // Return / Keypad Enter
+            if let action = action {
+                NSApp.sendAction(action, to: target, from: self)
+            }
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate {
 
     private var windows: [NSWindow] = []
     private let saveDebouncer = Debouncer(delay: 0.5)
     private var isTerminating = false
+
+    private var findPanel: NSPanel?
+    private var findField: NSSearchField?
+    private var lastFindTerm: String = ""
 
     // MARK: - App lifecycle
 
@@ -149,33 +166,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Actions
 
-    private var lastFindTerm: String = ""
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard
+            let field = obj.object as? NSSearchField,
+            field === findField
+        else { return }
 
+        // Only trigger on Return/Enter
+        let movement = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
+        if movement == NSReturnTextMovement {
+            performFindFromPanel(nil)
+        }
+    }
+
+    private func ensureFindPanel() -> NSPanel {
+        if let p = findPanel { return p }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 56),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Find"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.animationBehavior = .none
+
+        let field = NSSearchField(frame: NSRect(x: 12, y: 14, width: 336, height: 28))
+
+        field.delegate = self
+        
+        // field.sendsSearchStringImmediately = false
+        field.target = nil
+        field.action = nil
+        field.isContinuous = false
+        field.sendsSearchStringImmediately = false
+        field.sendsWholeSearchString = true
+
+        panel.contentView = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
+        panel.contentView?.addSubview(field)
+
+        self.findPanel = panel
+        self.findField = field
+        return panel
+    }
+
+    @objc private func performFindFromPanel(_ sender: Any?) {
+        print("Hello1")
+
+        guard let pdfView = NSApp.mainWindow?.contentView as? UpdraftPDFView else {
+            NSSound.beep()
+            return
+        }
+        print("Hello2")
+        guard let field = findField else { return }
+
+        let term = field.stringValue
+        lastFindTerm = term
+        print("Hello3")
+        pdfView.performFind(term)
+
+        // Optional: close panel after successful find
+        findPanel?.orderOut(nil)
+    }
+    
     @objc private func find(_ sender: Any?) {
-        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
+        guard NSApp.keyWindow != nil else {
             NSSound.beep()
             return
         }
 
-        let alert = NSAlert()
-        alert.messageText = "Find"
-        alert.informativeText = "Enter text to find in this PDF."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Find")
-        alert.addButton(withTitle: "Cancel")
+        let panel = ensureFindPanel()
 
-        let field = NSSearchField(string: lastFindTerm)
-        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        alert.accessoryView = field
-        field.selectText(nil)
+        // Seed with last term
+        findField?.stringValue = lastFindTerm
 
-        alert.window.animationBehavior = .none
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return }
+        // Center over the key window if possible
+        if let keyWin = NSApp.keyWindow {
+            let wf = keyWin.frame
+            let pf = panel.frame
+            let x = wf.midX - pf.width / 2
+            let y = wf.midY - pf.height / 2
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
 
-        let term = field.stringValue
-        lastFindTerm = term
-        pdfView.performFind(term)
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeFirstResponder(findField)
+        findField?.selectText(nil)
     }
 
     @objc private func findNext(_ sender: Any?) {
