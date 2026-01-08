@@ -17,6 +17,53 @@ final class UpdraftPDFView: PDFView {
     private var backStack: [BookmarkState] = []
     private var forwardStack: [BookmarkState] = []
 
+    // MARK: - Find
+
+    private var findTerm: String = ""
+    private var findMatches: [PDFSelection] = []
+    private var findIndex: Int = -1
+
+    func performFind(_ term: String) {
+        guard let doc = document else { NSSound.beep(); return }
+
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { NSSound.beep(); return }
+
+        findTerm = trimmed
+
+        // PDFKit search returns selections in document order.
+        findMatches = doc.findString(trimmed, withOptions: .caseInsensitive)
+        findIndex = -1
+
+        if findMatches.isEmpty {
+            NSSound.beep()
+            return
+        }
+
+        findNext()
+    }
+
+    func findNext() {
+        guard !findMatches.isEmpty else { NSSound.beep(); return }
+        findIndex = (findIndex + 1) % findMatches.count
+        showFindMatch(at: findIndex)
+    }
+
+    func findPrevious() {
+        guard !findMatches.isEmpty else { NSSound.beep(); return }
+        findIndex = (findIndex - 1 + findMatches.count) % findMatches.count
+        showFindMatch(at: findIndex)
+    }
+
+    private func showFindMatch(at index: Int) {
+        guard index >= 0, index < findMatches.count else { return }
+        let sel = findMatches[index]
+
+        // Highlight + scroll to it
+        setCurrentSelection(sel, animate: true)
+        go(to: sel)
+    }
+
     
     private func captureCurrentLocation() -> BookmarkState? {
         guard let doc = document else { return nil }

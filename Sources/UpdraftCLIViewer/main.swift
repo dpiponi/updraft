@@ -80,10 +80,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editMenu = NSMenu(title: "Edit")
         editMenuItem.submenu = editMenu
 
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
 
-        // App menu
+        editMenu.addItem(.separator())
+
+        let findItem = NSMenuItem(title: "Find…", action: #selector(find(_:)), keyEquivalent: "f")
+        findItem.keyEquivalentModifierMask = [.command]
+        findItem.target = self
+        editMenu.addItem(findItem)
+
+        // Optional but strongly useful:
+        let findNextItem = NSMenuItem(title: "Find Next", action: #selector(findNext(_:)), keyEquivalent: "g")
+        findNextItem.keyEquivalentModifierMask = [.command]
+        findNextItem.target = self
+        editMenu.addItem(findNextItem)
+
+        let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(findPrevious(_:)), keyEquivalent: "g")
+        findPrevItem.keyEquivalentModifierMask = [.command, .shift]
+        findPrevItem.target = self
+        editMenu.addItem(findPrevItem)        // App menu
+
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu(title: "File")
@@ -129,6 +148,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    private var lastFindTerm: String = ""
+
+    @objc private func find(_ sender: Any?) {
+        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
+            NSSound.beep()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Find"
+        alert.informativeText = "Enter text to find in this PDF."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Find")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSSearchField(string: lastFindTerm)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        alert.accessoryView = field
+        field.selectText(nil)
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        let term = field.stringValue
+        lastFindTerm = term
+        pdfView.performFind(term)
+    }
+
+    @objc private func findNext(_ sender: Any?) {
+        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
+            NSSound.beep()
+            return
+        }
+        pdfView.findNext()
+    }
+
+    @objc private func findPrevious(_ sender: Any?) {
+        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
+            NSSound.beep()
+            return
+        }
+        pdfView.findPrevious()
+    }
 
     @objc private func bringAllWindowsToFront(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
