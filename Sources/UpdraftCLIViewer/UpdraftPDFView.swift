@@ -23,6 +23,48 @@ final class UpdraftPDFView: PDFView {
     private var findMatches: [PDFSelection] = []
     private var findIndex: Int = -1
 
+    // MARK: - Two-page book mode (cover page alone, then spreads)
+
+    private var displayModeObserver: NSObjectProtocol?
+
+    private func enforceBookLayoutForCurrentDisplayMode() {
+        switch self.displayMode {
+        case .twoUp, .twoUpContinuous:
+            self.displaysAsBook = true
+        default:
+            self.displaysAsBook = false
+        }
+    }
+
+    private func startObservingDisplayModeChanges() {
+        // Avoid double registration if this view is reused.
+        if let obs = displayModeObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+
+        displayModeObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name.PDFViewDisplayModeChanged,
+            object: self,
+            queue: .main
+        ) { [weak self] _ in
+            self?.enforceBookLayoutForCurrentDisplayMode()
+        }
+
+        // Apply once immediately as well.
+        enforceBookLayoutForCurrentDisplayMode()
+    }
+
+    deinit {
+        if let obs = displayModeObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        startObservingDisplayModeChanges()
+    }
+
     func performFind(_ term: String) {
         guard let doc = document else { NSSound.beep(); return }
 
