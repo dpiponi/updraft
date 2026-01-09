@@ -417,11 +417,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
 
         let pdfView = UpdraftPDFView(frame: .zero)
         pdfView.document = doc
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.displayDirection = .vertical
         pdfView.updraftDelegate = self
 
-        // Apply zoom/state
+        // ---- Restore / set layout mode (display mode / direction / book) ----
+        // Defaults (used when no restoredState exists)
+        var displayMode: PDFDisplayMode = .singlePageContinuous
+        var displayDirection: PDFDisplayDirection = .vertical
+        var displaysAsBook: Bool? = nil
+
+        if let rs = restoredState {
+            if let raw = rs.pdfDisplayModeRaw, let m = PDFDisplayMode(rawValue: raw) {
+                displayMode = m
+            }
+            if let raw = rs.pdfDisplayDirectionRaw, let d = PDFDisplayDirection(rawValue: raw) {
+                displayDirection = d
+            }
+            displaysAsBook = rs.pdfDisplaysAsBook
+        }
+
+        pdfView.displayMode = displayMode
+        pdfView.displayDirection = displayDirection
+
+        // Book pairing policy:
+        // - If saved value exists, respect it.
+        // - Otherwise, enforce "book" pairing for two-up modes (cover alone), off otherwise.
+        if let savedBook = displaysAsBook {
+            pdfView.displaysAsBook = savedBook
+        } else {
+            switch displayMode {
+            case .twoUp, .twoUpContinuous:
+                pdfView.displaysAsBook = true
+            default:
+                pdfView.displaysAsBook = false
+            }
+        }
+
+        // ---- Apply zoom/state ----
         let viewState = restoredState?.view
         if let viewState {
             if viewState.usesAutoScale {
@@ -470,12 +501,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
 
         window.makeKeyAndOrderFront(nil)
 
+        // ---- Restore bookmarks ----
         if let restoredState, let bm = restoredState.view.bookmarks {
             let fingerprintOK = StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
             pdfView.importBookmarks(bm, fingerprintOK: fingerprintOK)
         }
 
-        // Navigate to restored position
+        // ---- Navigate to restored position ----
         if let vs = viewState {
             let idx = clamp(vs.pageIndex, 0, max(0, doc.pageCount - 1))
             if let page = doc.page(at: idx) {

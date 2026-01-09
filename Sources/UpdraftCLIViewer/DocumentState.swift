@@ -40,7 +40,10 @@ struct WindowState: Codable {
     let document: DocumentKey
     let view: DocumentViewState
     let frame: CGRect?
-}
+
+    var pdfDisplayModeRaw: Int?
+    var pdfDisplayDirectionRaw: Int?
+    var pdfDisplaysAsBook: Bool?}
 
 struct SessionState: Codable {
     let windows: [WindowState]

@@ -66,12 +66,18 @@ final class StateStore {
 
         guard let view = captureViewState(pdfView: pdfView) else { return nil }
 
-        return WindowState(
+        var ws = WindowState(
             document: key,
             view: view,
             frame: window.frame
         )
-    }
+
+        // Persist PDF layout mode
+        ws.pdfDisplayModeRaw = pdfView.displayMode.rawValue
+        ws.pdfDisplayDirectionRaw = pdfView.displayDirection.rawValue
+        ws.pdfDisplaysAsBook = pdfView.displaysAsBook
+
+        return ws    }
 
     private func makeBookmarkData(url: URL) -> Data? {
         // Prefer security-scoped bookmark; fall back if not allowed (non-sandboxed contexts vary).
