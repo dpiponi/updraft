@@ -2,10 +2,38 @@ import Foundation
 import AppKit
 import PDFKit
 
+
+struct DocumentStateEntry: Codable {
+    let document: DocumentKey
+    var windows: [WindowState]
+}
+
+struct DocumentStateStore: Codable {
+    var entries: [DocumentStateEntry]
+}
+
 final class StateStore {
 
     static let shared = StateStore()
     private let defaultsKey = "updraft.session.state"
+
+    private let documentsKey = "updraft.documents.state"
+    private let maxDocumentsToKeep = 500
+
+    private func loadDocumentStore() -> DocumentStateStore {
+        guard
+            let data = UserDefaults.standard.data(forKey: documentsKey),
+            let store = try? JSONDecoder().decode(DocumentStateStore.self, from: data)
+        else {
+            return DocumentStateStore(entries: [])
+        }
+        return store
+    }
+
+    private func saveDocumentStore(_ store: DocumentStateStore) {
+        guard let data = try? JSONEncoder().encode(store) else { return }
+        UserDefaults.standard.set(data, forKey: documentsKey)
+    }
 
     private init() {}
 
@@ -13,9 +41,55 @@ final class StateStore {
 
     func saveSession(windows: [NSWindow]) {
         let winStates = windows.compactMap { windowState(for: $0) }
+
+        // 1) Save the *session* (what is currently open)
         let session = SessionState(windows: winStates)
-        guard let data = try? JSONEncoder().encode(session) else { return }
-        UserDefaults.standard.set(data, forKey: defaultsKey)
+        if let data = try? JSONEncoder().encode(session) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
+
+        // 2) Save per-document state (so PDFs don’t “forget” when not in last session)
+        updatePerDocumentStore(with: winStates)
+    }
+
+    private func updatePerDocumentStore(with winStates: [WindowState]) {
+        let grouped = Dictionary(grouping: winStates, by: { $0.document })
+        var store = loadDocumentStore()
+
+        for (docKey, states) in grouped {
+            if let idx = store.entries.firstIndex(where: { $0.document == docKey }) {
+                store.entries[idx].windows = states
+            } else {
+                store.entries.append(DocumentStateEntry(document: docKey, windows: states))
+            }
+        }
+
+        if store.entries.count > maxDocumentsToKeep {
+            store.entries.removeFirst(store.entries.count - maxDocumentsToKeep)
+        }
+
+        saveDocumentStore(store)
+    }
+
+    func loadWindowStates(for url: URL) -> [WindowState] {
+        guard
+            let bookmark = makeBookmarkData(url: url),
+            let fingerprint = FileFingerprint.from(url: url)
+        else { return [] }
+
+        let key = DocumentKey(bookmark: bookmark, fingerprint: fingerprint)
+        let store = loadDocumentStore()
+
+        if let entry = store.entries.first(where: { $0.document == key }) {
+            return entry.windows
+        }
+
+        // Optional fallback: if bookmark changed but fingerprint matches
+        if let entry = store.entries.first(where: { $0.document.fingerprint == fingerprint }) {
+            return entry.windows
+        }
+
+        return []
     }
 
     func loadSession() -> SessionState? {
@@ -77,7 +151,8 @@ final class StateStore {
         ws.pdfDisplayDirectionRaw = pdfView.displayDirection.rawValue
         ws.pdfDisplaysAsBook = pdfView.displaysAsBook
 
-        return ws    }
+        return ws
+    }
 
     private func makeBookmarkData(url: URL) -> Data? {
         // Prefer security-scoped bookmark; fall back if not allowed (non-sandboxed contexts vary).

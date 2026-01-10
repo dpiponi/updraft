@@ -52,29 +52,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
     }
 
     private func openFromSystem(_ url: URL) {
-        // Reuse your existing logic: restore all windows for this document if present.
-        let session = StateStore.shared.loadSession()
+        let normalized = url.resolvingSymlinksInPath().standardizedFileURL
 
-        var matches: [WindowState] = []
-        if let session {
-            for ws in session.windows {
-                guard let restoredURL = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
-                let r = restoredURL.resolvingSymlinksInPath().standardizedFileURL
-                if r == url {
-                    matches.append(ws)
-                }
-            }
-        }
+        // Per-document restore: load saved windows for THIS PDF, even if it wasn't
+        // part of the most recent session.
+        let matches = StateStore.shared.loadWindowStates(for: normalized)
 
         if matches.isEmpty {
-            openViewerWindow(url: url, restoredState: nil)
+            openViewerWindow(url: normalized, restoredState: nil)
         } else {
             for ws in matches {
-                openViewerWindow(url: url, restoredState: ws)
+                openViewerWindow(url: normalized, restoredState: ws)
             }
         }
     }
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
 
@@ -82,31 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         didFinishLaunching = true
 
         let args = CommandLine.arguments.dropFirst()
-        let session = StateStore.shared.loadSession()
 
-        // 1) CLI launch: open ONLY the CLI file, but restore ALL saved windows for it.
+        // 1) CLI launch: open ONLY this file, restoring ALL saved windows for it (per-document store).
         if let path = args.first {
             let cliURL = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
-
-            var matches: [WindowState] = []
-            if let session {
-                for ws in session.windows {
-                    guard let restoredURL = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
-                    let r = restoredURL.resolvingSymlinksInPath().standardizedFileURL
-                    if r == cliURL {
-                        matches.append(ws)
-                    }
-                }
-            }
-
-            if matches.isEmpty {
-                openViewerWindow(url: cliURL, restoredState: nil)
-            } else {
-                for ws in matches {
-                    openViewerWindow(url: cliURL, restoredState: ws)
-                }
-            }
-
+            openFromSystem(cliURL)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -115,31 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         // If macOS handed us files before didFinishLaunching, open those now.
         // Do NOT restore the whole previous session in this case.
         if !pendingOpenURLs.isEmpty {
-            // Normalize once to avoid duplicate comparisons and subtle path mismatches.
             let urls = pendingOpenURLs.map { $0.resolvingSymlinksInPath().standardizedFileURL }
             pendingOpenURLs.removeAll()
 
             for url in urls {
-                // Restore per-document windows if we have them; otherwise open fresh.
-                var matches: [WindowState] = []
-
-                if let session {
-                    for ws in session.windows {
-                        guard let restoredURL = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
-                        let r = restoredURL.resolvingSymlinksInPath().standardizedFileURL
-                        if r == url {
-                            matches.append(ws)
-                        }
-                    }
-                }
-
-                if matches.isEmpty {
-                    openViewerWindow(url: url, restoredState: nil)
-                } else {
-                    for ws in matches {
-                        openViewerWindow(url: url, restoredState: ws)
-                    }
-                }
+                openFromSystem(url)
             }
 
             NSApp.activate(ignoringOtherApps: true)
@@ -147,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         }
 
         // 3) Normal GUI launch with no requested file: restore the full previous session (all windows).
-        if let session {
+        if let session = StateStore.shared.loadSession() {
             for ws in session.windows {
                 guard let url = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
                 openViewerWindow(url: url, restoredState: ws)

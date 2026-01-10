@@ -26,6 +26,14 @@ struct FileFingerprint: Codable, Hashable {
 struct DocumentKey: Codable, Hashable {
     let bookmark: Data
     let fingerprint: FileFingerprint
+
+    static func == (lhs: DocumentKey, rhs: DocumentKey) -> Bool {
+        lhs.fingerprint == rhs.fingerprint
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(fingerprint)
+    }
 }
 
 struct DocumentViewState: Codable {
@@ -43,7 +51,8 @@ struct WindowState: Codable {
 
     var pdfDisplayModeRaw: Int?
     var pdfDisplayDirectionRaw: Int?
-    var pdfDisplaysAsBook: Bool?}
+    var pdfDisplaysAsBook: Bool?
+}
 
 struct SessionState: Codable {
     let windows: [WindowState]
