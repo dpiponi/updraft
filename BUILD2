@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="Updraft"
+PRODUCT_NAME="updraft"            # SwiftPM product name (your executable is "updraft")
+CONFIG="release"
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_DIR="$ROOT_DIR/.build/$CONFIG"
+BIN_SRC="$BUILD_DIR/$PRODUCT_NAME"
+
+APP_DIR="$ROOT_DIR/$APP_NAME.app"
+CONTENTS_DIR="$APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+
+INFO_PLIST_SRC="$ROOT_DIR/AppResources/Info.plist"
+INFO_PLIST_DST="$CONTENTS_DIR/Info.plist"
+
+ICON_SRC="$ROOT_DIR/AppResources/AppIcon.icns"
+ICON_DST="$RESOURCES_DIR/AppIcon.icns"
+
+echo "Cleaning…"
+
+swift package clean
+
+echo "Building…"
+swift build -c "$CONFIG"
+
+if [[ ! -f "$BIN_SRC" ]]; then
+  echo "ERROR: Expected executable not found at: $BIN_SRC" >&2
+  exit 1
+fi
+
+if [[ ! -f "$INFO_PLIST_SRC" ]]; then
+  echo "ERROR: Missing Info.plist at: $INFO_PLIST_SRC" >&2
+  echo "Create it at AppResources/Info.plist (repo root)." >&2
+  exit 1
+fi
+
+echo "Bundling app…"
+rm -rf "$APP_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+
+if [[ -f "$ICON_SRC" ]]; then
+  cp "$ICON_SRC" "$ICON_DST"
+else
+  echo "WARNING: No icon found at $ICON_SRC (skipping icon copy)" >&2
+fi
+
+cp "$BIN_SRC" "$MACOS_DIR/$PRODUCT_NAME"
+cp "$INFO_PLIST_SRC" "$INFO_PLIST_DST"
+
+# Make sure the executable bit is set (usually already is, but this avoids surprises)
+chmod +x "$MACOS_DIR/$PRODUCT_NAME"
+
+# Optional but recommended during development:
+# register/update LaunchServices so Finder notices document associations changes.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$APP_DIR" >/dev/null 2>&1 || true
+fi
+touch "$APP_DIR" || true
+
+# killall Finder >/dev/null 2>&1 || true
+
+[[ -f "$ICON_DST" ]] && echo "Icon: $ICON_DST"
+
+echo "Done: $APP_DIR"
