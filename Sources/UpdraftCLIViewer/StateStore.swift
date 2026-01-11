@@ -182,13 +182,18 @@ final class StateStore {
         let viewCenter = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY)
         let pagePoint = pdfView.convert(viewCenter, to: page)
 
-        let bookmarks: [String: BookmarkState]?
-        if let up = pdfView as? UpdraftPDFView {
-            let exported = up.exportBookmarks()
-            bookmarks = exported.isEmpty ? nil : exported
-        } else {
-            bookmarks = nil
-        }
+        // let bookmarks: [String: BookmarkState]?
+        // if let up = pdfView as? UpdraftPDFView {
+        //     let exported = up.exportBookmarks()
+        //     bookmarks = exported.isEmpty ? nil : exported
+        // } else {
+        //     bookmarks = nil
+        // }
+
+        let bookmarks: [String: BookmarkState]? =
+            (pdfView as? UpdraftPDFView)
+                .map { $0.exportBookmarks() }
+                .flatMap { $0.isEmpty ? nil : $0 }
 
         return DocumentViewState(
             pageIndex: pageIndex,

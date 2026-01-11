@@ -1,18 +1,18 @@
 import AppKit
 import PDFKit
 
-final class ReturnOnlySearchField: NSSearchField {
-    override func keyDown(with event: NSEvent) {
-        // Only trigger the action on Return/Enter.
-        if event.keyCode == 36 || event.keyCode == 76 { // Return / Keypad Enter
-            if let action = action {
-                NSApp.sendAction(action, to: target, from: self)
-            }
-            return
-        }
-        super.keyDown(with: event)
-    }
-}
+// final class ReturnOnlySearchField: NSSearchField {
+//     override func keyDown(with event: NSEvent) {
+//         // Only trigger the action on Return/Enter.
+//         if event.keyCode == 36 || event.keyCode == 76 { // Return / Keypad Enter
+//             if let action = action {
+//                 NSApp.sendAction(action, to: target, from: self)
+//             }
+//             return
+//         }
+//         super.keyDown(with: event)
+//     }
+// }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate {
 
@@ -26,9 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
     private var pendingOpenURLs: [URL] = []
     private var didFinishLaunching = false
 
-    // MARK: - App lifecycle
-
-    
     func application(_ application: NSApplication, open urls: [URL]) {
         // Normalize to avoid mismatches due to symlinks / relative paths.
         let normalized = urls.map { $0.resolvingSymlinksInPath().standardizedFileURL }
