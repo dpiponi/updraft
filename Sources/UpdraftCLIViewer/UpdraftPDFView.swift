@@ -232,7 +232,7 @@ final class UpdraftPDFView: PDFView {
     }
 
     override func keyDown(with event: NSEvent) {
-  
+
         if event.modifierFlags.contains(.command) {
             super.keyDown(with: event)
             return
@@ -257,6 +257,8 @@ final class UpdraftPDFView: PDFView {
                 goForward()
                 return
             }
+            super.keyDown(with: event)
+            return
         }
 
         // If we are waiting for a bookmark letter
@@ -264,6 +266,35 @@ final class UpdraftPDFView: PDFView {
             pendingCommand = nil
             handleBookmarkKey(c, mode: pending)
             return
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isBare = flags.isEmpty
+        let isShiftOnly = flags == [.shift]
+
+        guard let appDelegate = NSApp.delegate as? AppDelegate else {
+            super.keyDown(with: event)
+            return
+        }
+
+        // Vim-ish find keys
+        if isBare {
+            switch c {
+            case "/":
+                NSApp.sendAction(#selector(AppDelegate.find(_:)), to: appDelegate, from: self)
+                return
+            case "n":
+                NSApp.sendAction(#selector(AppDelegate.findNext(_:)), to: appDelegate, from: self)
+                return
+            default:
+                break
+            }
+        } else if isShiftOnly {
+            // Shift-/ produces "?" (typically delivered as "?")
+            if c == "?" {
+                NSApp.sendAction(#selector(AppDelegate.findPrevious(_:)), to: appDelegate, from: self)
+                return
+            }
         }
 
         switch c {

@@ -247,25 +247,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
     }
 
     @objc private func performFindFromPanel(_ sender: Any?) {
-        print("Hello1")
-
         guard let pdfView = NSApp.mainWindow?.contentView as? UpdraftPDFView else {
             NSSound.beep()
             return
         }
-        print("Hello2")
         guard let field = findField else { return }
 
         let term = field.stringValue
         lastFindTerm = term
-        print("Hello3")
         pdfView.performFind(term)
 
         // Optional: close panel after successful find
         findPanel?.orderOut(nil)
     }
     
-    @objc private func find(_ sender: Any?) {
+    @objc func find(_ sender: Any?) {
         guard NSApp.keyWindow != nil else {
             NSSound.beep()
             return
@@ -291,7 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         findField?.selectText(nil)
     }
 
-    @objc private func findNext(_ sender: Any?) {
+    @objc func findNext(_ sender: Any?) {
         guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
             NSSound.beep()
             return
@@ -299,7 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         pdfView.findNext()
     }
 
-    @objc private func findPrevious(_ sender: Any?) {
+    @objc func findPrevious(_ sender: Any?) {
         guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
             NSSound.beep()
             return
