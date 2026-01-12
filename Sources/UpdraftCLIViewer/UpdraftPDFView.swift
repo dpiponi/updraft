@@ -386,11 +386,38 @@ extension UpdraftPDFView {
         bookmarks = rebuilt
     }
 
+    // override func mouseDown(with event: NSEvent) {
+    //     window?.makeFirstResponder(self)
+
+    //     // Only treat plain left-click on *internal* PDF links as a jump.
+    //     // Right-click is handled by the context menu; we don't want to push history then.
+    //     if event.type == .leftMouseDown {
+    //         if case .destination = linkTarget(at: event) {
+    //             if let cur = captureCurrentLocation() {
+    //                 backStack.append(cur)
+    //                 forwardStack.removeAll()
+    //             }
+    //         }
+    //     }
+
+    //     super.mouseDown(with: event)
+    // }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
 
-        // Only treat plain left-click on *internal* PDF links as a jump.
-        // Right-click is handled by the context menu; we don't want to push history then.
+        // ⌘-click: open link in a new window instead of following it here
+        if event.type == .leftMouseDown,
+           event.modifierFlags.contains(.command),
+           let target = linkTarget(at: event) {
+
+            let item = NSMenuItem()
+            item.representedObject = target
+            openLinkInNewWindow(item)
+            return // IMPORTANT: do not call super, or PDFView will follow the link in-place
+        }
+
+        // Existing history bookkeeping for normal in-place navigation
         if event.type == .leftMouseDown {
             if case .destination = linkTarget(at: event) {
                 if let cur = captureCurrentLocation() {
