@@ -11,5 +11,5 @@ getting annoyed.
 
 Methodology
 -----------
-This code was entirely written by ChatGPT.
+This code was entirely written by ChatGPT. (ChatGPT 5.2 to start with.)
 I produced the icon myself using Pixelmator Pro.
