@@ -1,51 +1,102 @@
 import AppKit
 import PDFKit
 
-// final class ReturnOnlySearchField: NSSearchField {
-//     override func keyDown(with event: NSEvent) {
-//         // Only trigger the action on Return/Enter.
-//         if event.keyCode == 36 || event.keyCode == 76 { // Return / Keypad Enter
-//             if let action = action {
-//                 NSApp.sendAction(action, to: target, from: self)
-//             }
-//             return
-//         }
-//         super.keyDown(with: event)
-//     }
-// }
+// MARK: - App Delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate {
 
-    private var windows: [NSWindow] = []
+    // MARK: Dependencies
+
     private let saveDebouncer = Debouncer(delay: 0.5)
+
+    // MARK: State
+
+    private var windows: [NSWindow] = []
     private var isTerminating = false
 
-    private var findPanel: NSPanel?
-    private var findField: NSSearchField?
-    private var lastFindTerm: String = ""
+    // Finder may send open requests before didFinishLaunching.
     private var pendingOpenURLs: [URL] = []
     private var didFinishLaunching = false
 
+    // Find panel
+    private var findPanel: NSPanel?
+    private var findField: NSSearchField?
+    private var lastFindTerm: String = ""
+
+    // MARK: - NSApplicationDelegate lifecycle
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildMainMenu()
+        didFinishLaunching = true
+
+        // Launch modes:
+        // 1) CLI: open only the passed file, restoring all saved windows for it (per-document).
+        // 2) Finder/Open With: open requested files (no full session restore).
+        // 3) Normal GUI launch: restore full previous session.
+        if openFromCommandLineIfPresent() { return }
+        if openPendingURLsIfPresent() { return }
+        restorePreviousSessionIfAvailable()
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+        saveNow() // save while windows still exist
+        return .terminateNow
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    // MARK: - Open documents (Finder / CLI)
+
     func application(_ application: NSApplication, open urls: [URL]) {
-        // Normalize to avoid mismatches due to symlinks / relative paths.
         let normalized = urls.map { $0.resolvingSymlinksInPath().standardizedFileURL }
 
         if didFinishLaunching {
-            // Open immediately if we're already up.
-            for url in normalized {
-                openFromSystem(url)
-            }
+            normalized.forEach(openFromSystem)
             NSApp.activate(ignoringOtherApps: true)
         } else {
-            // Finder can send open requests before didFinishLaunching.
             pendingOpenURLs.append(contentsOf: normalized)
         }
     }
 
     func application(_ application: NSApplication, openFile filename: String) -> Bool {
-        // Some Finder paths still use this. Return true to indicate “accepted”.
+        // Legacy path still used by Finder in some cases.
         self.application(application, open: [URL(fileURLWithPath: filename)])
         return true
+    }
+
+    private func openFromCommandLineIfPresent() -> Bool {
+        let args = CommandLine.arguments.dropFirst()
+        guard let path = args.first else { return false }
+
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        openFromSystem(url)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    private func openPendingURLsIfPresent() -> Bool {
+        guard !pendingOpenURLs.isEmpty else { return false }
+
+        let urls = pendingOpenURLs.map { $0.resolvingSymlinksInPath().standardizedFileURL }
+        pendingOpenURLs.removeAll()
+
+        urls.forEach(openFromSystem)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    private func restorePreviousSessionIfAvailable() {
+        guard let session = StateStore.shared.loadSession() else { return }
+
+        for ws in session.windows {
+            guard let url = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
+            openViewerWindow(url: url, restoredState: ws)
+        }
     }
 
     private func openFromSystem(_ url: URL) {
@@ -64,66 +115,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         }
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        buildMainMenu()
-
-        // Mark launch as complete so application(_:open:) can open immediately.
-        didFinishLaunching = true
-
-        let args = CommandLine.arguments.dropFirst()
-
-        // 1) CLI launch: open ONLY this file, restoring ALL saved windows for it (per-document store).
-        if let path = args.first {
-            let cliURL = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
-            openFromSystem(cliURL)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        // 2) Finder / Open With / drag-to-dock launch:
-        // If macOS handed us files before didFinishLaunching, open those now.
-        // Do NOT restore the whole previous session in this case.
-        if !pendingOpenURLs.isEmpty {
-            let urls = pendingOpenURLs.map { $0.resolvingSymlinksInPath().standardizedFileURL }
-            pendingOpenURLs.removeAll()
-
-            for url in urls {
-                openFromSystem(url)
-            }
-
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        // 3) Normal GUI launch with no requested file: restore the full previous session (all windows).
-        if let session = StateStore.shared.loadSession() {
-            for ws in session.windows {
-                guard let url = StateStore.shared.resolveDocumentURL(ws.document) else { continue }
-                openViewerWindow(url: url, restoredState: ws)
-            }
-        }
-
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        isTerminating = true
-
-        // Save session while windows are still present
-        saveNow()
-
-        return .terminateNow
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
-    }
-
     // MARK: - Menu
 
     private func buildMainMenu() {
         let mainMenu = NSMenu()
 
+        // App menu
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu(title: "Updraft")
+        appMenuItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit Updraft", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // File menu
+        let fileMenuItem = NSMenuItem()
+        mainMenu.addItem(fileMenuItem)
+        let fileMenu = NSMenu(title: "File")
+        fileMenuItem.submenu = fileMenu
+        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+
+        // Edit menu
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
@@ -141,7 +152,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         findItem.target = self
         editMenu.addItem(findItem)
 
-        // Optional but strongly useful:
         let findNextItem = NSMenuItem(title: "Find Next", action: #selector(findNext(_:)), keyEquivalent: "g")
         findNextItem.keyEquivalentModifierMask = [.command]
         findNextItem.target = self
@@ -150,20 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         let findPrevItem = NSMenuItem(title: "Find Previous", action: #selector(findPrevious(_:)), keyEquivalent: "g")
         findPrevItem.keyEquivalentModifierMask = [.command, .shift]
         findPrevItem.target = self
-        editMenu.addItem(findPrevItem)        // App menu
-
-        let appMenuItem = NSMenuItem()
-        mainMenu.addItem(appMenuItem)
-        let appMenu = NSMenu(title: "File")
-        appMenuItem.submenu = appMenu
-        appMenu.addItem(withTitle: "Quit Updraft", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-
-        // File menu
-        let fileMenuItem = NSMenuItem()
-        mainMenu.addItem(fileMenuItem)
-        let fileMenu = NSMenu(title: "File")
-        fileMenuItem.submenu = fileMenu
-        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        editMenu.addItem(findPrevItem)
 
         // Navigate menu
         let navMenuItem = NSMenuItem()
@@ -196,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         NSApp.mainMenu = mainMenu
     }
 
-    // MARK: - Actions
+    // MARK: - Find panel
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard
@@ -204,7 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
             field === findField
         else { return }
 
-        // Only trigger on Return/Enter
+        // Only trigger on Return/Enter.
         let movement = (obj.userInfo?["NSTextMovement"] as? Int) ?? 0
         if movement == NSReturnTextMovement {
             performFindFromPanel(nil)
@@ -228,12 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         panel.animationBehavior = .none
 
         let field = NSSearchField(frame: NSRect(x: 12, y: 14, width: 336, height: 28))
-
         field.delegate = self
-        
-        // field.sendsSearchStringImmediately = false
-        field.target = nil
-        field.action = nil
         field.isContinuous = false
         field.sendsSearchStringImmediately = false
         field.sendsWholeSearchString = true
@@ -241,67 +233,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         panel.contentView = NSView(frame: panel.contentRect(forFrameRect: panel.frame))
         panel.contentView?.addSubview(field)
 
-        self.findPanel = panel
-        self.findField = field
+        findPanel = panel
+        findField = field
         return panel
     }
 
     @objc private func performFindFromPanel(_ sender: Any?) {
-        guard let pdfView = NSApp.mainWindow?.contentView as? UpdraftPDFView else {
-            NSSound.beep()
-            return
-        }
+        guard let pdfView = currentUpdraftPDFView() else { NSSound.beep(); return }
         guard let field = findField else { return }
 
         let term = field.stringValue
         lastFindTerm = term
         pdfView.performFind(term)
 
-        // Optional: close panel after successful find
+        // Optional: close panel after successful find.
         findPanel?.orderOut(nil)
     }
-    
+
     @objc func find(_ sender: Any?) {
-        guard NSApp.keyWindow != nil else {
-            NSSound.beep()
-            return
-        }
+        guard NSApp.keyWindow != nil else { NSSound.beep(); return }
 
         let panel = ensureFindPanel()
-
-        // Seed with last term
         findField?.stringValue = lastFindTerm
 
-        // Center over the key window if possible
-        if let keyWin = NSApp.keyWindow {
-            let wf = keyWin.frame
-            let pf = panel.frame
-            let x = wf.midX - pf.width / 2
-            let y = wf.midY - pf.height / 2
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        }
-
+        center(panel: panel, over: NSApp.keyWindow)
         panel.makeKeyAndOrderFront(nil)
+
         NSApp.activate(ignoringOtherApps: true)
         panel.makeFirstResponder(findField)
         findField?.selectText(nil)
     }
 
     @objc func findNext(_ sender: Any?) {
-        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
-            NSSound.beep()
-            return
-        }
+        guard let pdfView = currentUpdraftPDFView() else { NSSound.beep(); return }
         pdfView.findNext()
     }
 
     @objc func findPrevious(_ sender: Any?) {
-        guard let pdfView = NSApp.keyWindow?.contentView as? UpdraftPDFView else {
-            NSSound.beep()
-            return
-        }
+        guard let pdfView = currentUpdraftPDFView() else { NSSound.beep(); return }
         pdfView.findPrevious()
     }
+
+    // MARK: - Window actions
 
     @objc private func bringAllWindowsToFront(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
@@ -342,19 +315,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         guard response == .alertFirstButtonReturn else { return }
 
         let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let n = Int(trimmed), (1...pageCount).contains(n) else {
-            NSSound.beep()
-            return
-        }
-
+        guard let n = Int(trimmed), (1...pageCount).contains(n) else { NSSound.beep(); return }
         guard let page = doc.page(at: n - 1) else { return }
+
         pdfView.go(to: page)
     }
 
-    // MARK: - Window creation (URL-based, used for open/restore)
+    // MARK: - Window creation (URL-based, open/restore)
+
 
     func openViewerWindow(url: URL, restoredState: WindowState?) {
-        // Security-scoped best-effort
+        // Security-scoped best-effort.
         let didAccess = url.startAccessingSecurityScopedResource()
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
 
@@ -364,53 +335,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         pdfView.document = doc
         pdfView.updraftDelegate = self
 
-        // ---- Restore / set layout mode (display mode / direction / book) ----
-        // Defaults (used when no restoredState exists)
-        var displayMode: PDFDisplayMode = .singlePageContinuous
-        var displayDirection: PDFDisplayDirection = .vertical
-        var displaysAsBook: Bool? = nil
+        let viewState = restoredState?.view
+        let isRestoringZoom = (viewState != nil)
 
-        if let rs = restoredState {
-            if let raw = rs.pdfDisplayModeRaw, let m = PDFDisplayMode(rawValue: raw) {
-                displayMode = m
-            }
-            if let raw = rs.pdfDisplayDirectionRaw, let d = PDFDisplayDirection(rawValue: raw) {
-                displayDirection = d
-            }
-            displaysAsBook = rs.pdfDisplaysAsBook
-        }
-
+        // Restore / set layout mode.
+        let (displayMode, displayDirection, displaysAsBook) = resolveLayout(restoredState: restoredState)
         pdfView.displayMode = displayMode
         pdfView.displayDirection = displayDirection
+        pdfView.displaysAsBook = displaysAsBook
 
-        // Book pairing policy:
-        // - If saved value exists, respect it.
-        // - Otherwise, enforce "book" pairing for two-up modes (cover alone), off otherwise.
-        if let savedBook = displaysAsBook {
-            pdfView.displaysAsBook = savedBook
-        } else {
-            switch displayMode {
-            case .twoUp, .twoUpContinuous:
-                pdfView.displaysAsBook = true
-            default:
-                pdfView.displaysAsBook = false
-            }
-        }
-
-        // ---- Apply zoom/state ----
-        let viewState = restoredState?.view
-        if let viewState {
-            if viewState.usesAutoScale {
-                pdfView.autoScales = true
-            } else if let s = viewState.scaleFactor {
-                pdfView.autoScales = false
-                pdfView.scaleFactor = s
-            } else {
-                pdfView.autoScales = true
-            }
-        } else {
-            pdfView.autoScales = true
-        }
+        // Apply zoom/state (restored windows keep their saved zoom policy).
+        applyZoom(viewState: viewState, to: pdfView)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
@@ -425,49 +360,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
             // savedFrame is a WINDOW frame (screen coords), not a content rect.
             window.setFrame(savedFrame, display: false)
         } else {
-            // No saved frame: size to page and center (your prior behavior)
-            let pageToMeasure: PDFPage? = {
-                if let vs = viewState, let page = doc.page(at: clamp(vs.pageIndex, 0, doc.pageCount - 1)) {
-                    return page
-                }
-                return doc.page(at: 0)
-            }()
-
-            let scaleForSizing: CGFloat = {
-                if let vs = viewState, !vs.usesAutoScale, let s = vs.scaleFactor { return s }
-                return 1.0
-            }()
-
-            if let pageToMeasure {
-                sizeWindowToPage(window: window, page: pageToMeasure, scale: scaleForSizing)
+            // New window default: use a screen-relative size so "fit page" doesn't look tiny.
+            if let screen = NSScreen.main {
+                let vf = screen.visibleFrame
+                let w = vf.width * 0.80
+                let h = vf.height * 0.85
+                window.setFrame(NSRect(x: 0, y: 0, width: w, height: h), display: false)
             }
             window.center()
         }
 
         window.makeKeyAndOrderFront(nil)
 
-        // ---- Restore bookmarks ----
+        // For brand-new windows (no saved zoom), force a post-layout "fit page" computation.
+        if !isRestoringZoom {
+            DispatchQueue.main.async { [weak pdfView] in
+                guard let pdfView else { return }
+                pdfView.layoutSubtreeIfNeeded()
+                pdfView.autoScales = true
+                pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
+            }
+        }
+
+        // Restore bookmarks.
         if let restoredState, let bm = restoredState.view.bookmarks {
             let fingerprintOK = StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
             pdfView.importBookmarks(bm, fingerprintOK: fingerprintOK)
         }
 
-        // ---- Navigate to restored position ----
+        // Navigate to restored position.
         if let vs = viewState {
-            let idx = clamp(vs.pageIndex, 0, max(0, doc.pageCount - 1))
-            if let page = doc.page(at: idx) {
-                // If fingerprint changed, ignore pointInPage (best-effort policy)
-                let fingerprintOK: Bool = {
-                    guard let restoredState else { return true }
-                    return StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
-                }()
-
-                if fingerprintOK, let p = vs.pointInPage {
-                    pdfView.go(to: PDFDestination(page: page, at: p))
-                } else {
-                    pdfView.go(to: page)
-                }
-            }
+            restorePosition(viewState: vs, restoredState: restoredState, url: url, document: doc, pdfView: pdfView)
         }
 
         windows.append(window)
@@ -475,11 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         scheduleSave()
     }
 
-    func noteViewStateChanged() {
-        scheduleSave()
-    }
-
-    // MARK: - Window creation (existing document, used for "open link in new window")
+    // MARK: - Window creation (existing document, link opens)
 
     func openViewerWindowFromExistingDocument(
         document: PDFDocument,
@@ -512,7 +431,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         window.title = title
         window.contentView = pdfView
 
-        // Size to the target page at the same zoom
         if let page = destination?.page ?? document.page(at: 0) {
             sizeWindowToPage(window: window, page: page, scale: scaleForSizing)
         }
@@ -526,6 +444,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
 
         windows.append(window)
         attachObservers(pdfView: pdfView, window: window)
+        scheduleSave()
+    }
+
+    func noteViewStateChanged() {
         scheduleSave()
     }
 
@@ -574,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         print("Updraft: saved session with \(windows.count) window(s)")
     }
 
-    // MARK: - Window sizing to page
+    // MARK: - Window sizing
 
     private func sizeWindowToPage(window: NSWindow, page: PDFPage, scale: CGFloat) {
         let bounds = page.bounds(for: .cropBox)
@@ -594,6 +516,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSSearchFieldDelegate 
         }
 
         window.setContentSize(desired)
+    }
+
+    // MARK: - Small helpers (UI)
+
+    private func currentUpdraftPDFView() -> UpdraftPDFView? {
+        // Prefer keyWindow; fall back to mainWindow.
+        if let v = NSApp.keyWindow?.contentView as? UpdraftPDFView { return v }
+        if let v = NSApp.mainWindow?.contentView as? UpdraftPDFView { return v }
+        return nil
+    }
+
+    private func center(panel: NSPanel, over window: NSWindow?) {
+        guard let w = window else { return }
+        let wf = w.frame
+        let pf = panel.frame
+        let x = wf.midX - pf.width / 2
+        let y = wf.midY - pf.height / 2
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: - Restore helpers (layout/zoom/position)
+
+    private func resolveLayout(restoredState: WindowState?) -> (PDFDisplayMode, PDFDisplayDirection, Bool) {
+        // Defaults
+        var mode: PDFDisplayMode = .singlePageContinuous
+        var direction: PDFDisplayDirection = .vertical
+        var book: Bool? = nil
+
+        if let rs = restoredState {
+            if let raw = rs.pdfDisplayModeRaw, let m = PDFDisplayMode(rawValue: raw) {
+                mode = m
+            }
+            if let raw = rs.pdfDisplayDirectionRaw, let d = PDFDisplayDirection(rawValue: raw) {
+                direction = d
+            }
+            book = rs.pdfDisplaysAsBook
+        }
+
+        // Book pairing policy:
+        // - If saved value exists, respect it.
+        // - Otherwise, enforce "book" pairing for two-up modes (cover alone), off otherwise.
+        let resolvedBook: Bool = {
+            if let book { return book }
+            switch mode {
+            case .twoUp, .twoUpContinuous:
+                return true
+            default:
+                return false
+            }
+        }()
+
+        return (mode, direction, resolvedBook)
+    }
+
+    private func applyZoom(viewState: DocumentViewState?, to pdfView: PDFView) {
+        guard let viewState else {
+            pdfView.autoScales = true
+            return
+        }
+
+        if viewState.usesAutoScale {
+            pdfView.autoScales = true
+            return
+        }
+
+        if let s = viewState.scaleFactor {
+            pdfView.autoScales = false
+            pdfView.scaleFactor = s
+        } else {
+            pdfView.autoScales = true
+        }
+    }
+
+    private func preferredSizingPage(document: PDFDocument, viewState: DocumentViewState?) -> PDFPage? {
+        if let vs = viewState {
+            let idx = clamp(vs.pageIndex, 0, max(0, document.pageCount - 1))
+            if let p = document.page(at: idx) { return p }
+        }
+        return document.page(at: 0)
+    }
+
+    private func preferredSizingScale(viewState: DocumentViewState?) -> CGFloat {
+        if let vs = viewState, !vs.usesAutoScale, let s = vs.scaleFactor {
+            return s
+        }
+        return 1.0
+    }
+
+    private func restorePosition(
+        viewState vs: DocumentViewState,
+        restoredState: WindowState?,
+        url: URL,
+        document doc: PDFDocument,
+        pdfView: PDFView
+    ) {
+        let idx = clamp(vs.pageIndex, 0, max(0, doc.pageCount - 1))
+        guard let page = doc.page(at: idx) else { return }
+
+        // If fingerprint changed, ignore pointInPage (best-effort policy).
+        let fingerprintOK: Bool = {
+            guard let restoredState else { return true }
+            return StateStore.shared.isFingerprintMatching(restoredState.document, url: url)
+        }()
+
+        if fingerprintOK, let p = vs.pointInPage {
+            pdfView.go(to: PDFDestination(page: page, at: p))
+        } else {
+            pdfView.go(to: page)
+        }
     }
 }
 
